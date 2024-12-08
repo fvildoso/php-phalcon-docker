@@ -1,0 +1,7 @@
+services:
+  app:
+    image: fvildoso/php-phalcon:8.2.19-alpine
+    volumes:
+      - ./:/var/www/html
+    ports:
+      - "9000:9000"
