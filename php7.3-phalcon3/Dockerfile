@@ -9,15 +9,17 @@ RUN apk update && \
     apk upgrade && \
     apk add --no-cache \
         $PHPIZE_DEPS \
+        git \
         libxml2-dev \
         libzip-dev \
         curl-dev \
-        git \
         autoconf \
         gcc \
         g++ \
         make \
-        re2c
+        re2c \
+        bash \
+        linux-headers
 
 # Instalar extensiones PHP comunes
 RUN docker-php-ext-install -j$(nproc) \
@@ -28,7 +30,7 @@ RUN docker-php-ext-install -j$(nproc) \
         mbstring
 
 # Instalar Phalcon
-RUN git clone https://github.com/phalcon/cphalcon.git -b v${PHALCON_VERSION} /tmp/cphalcon && \
+RUN git clone --depth=1 https://github.com/phalcon/cphalcon.git -b v${PHALCON_VERSION} /tmp/cphalcon && \
     cd /tmp/cphalcon/build && \
     ./install && \
     docker-php-ext-enable phalcon
