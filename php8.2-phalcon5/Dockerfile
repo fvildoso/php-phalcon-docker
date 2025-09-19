@@ -39,8 +39,10 @@ RUN apk add --no-cache imagemagick-dev && \
     pecl install imagick && \
     docker-php-ext-enable imagick
 
-# Instalar Phalcon
+# Instalar Phalcon (requiere pecl/psr)
 RUN apk add --no-cache --virtual .build-deps $PHPIZE_DEPS && \
+    pecl install psr && \
+    docker-php-ext-enable psr && \
     pecl install phalcon-${PHALCON_VERSION} && \
     docker-php-ext-enable phalcon && \
     apk del .build-deps

@@ -69,6 +69,8 @@ RUN apk add --no-cache --virtual .build-deps $PHPIZE_DEPS && \
     docker-php-ext-enable imagick && \
     pecl install memcached && \
     docker-php-ext-enable memcached && \
+    pecl install psr && \
+    docker-php-ext-enable psr && \
     pecl install phalcon-${PHALCON_VERSION} && \
     docker-php-ext-enable phalcon && \
     apk del .build-deps
