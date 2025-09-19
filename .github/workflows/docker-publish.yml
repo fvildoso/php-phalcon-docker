@@ -41,8 +41,8 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ${{ env.DOCKERHUB_USERNAME }}/php-phalcon:8.4.8-phalcon5.9.3-alpine
-            ${{ env.DOCKERHUB_USERNAME }}/php-phalcon:8.4-phalcon5.9-alpine
+            ${{ env.DOCKERHUB_USERNAME }}/php-phalcon:8.4-phalcon5.9.4
+            ${{ env.DOCKERHUB_USERNAME }}/php-phalcon:8.4-phalcon5.9
 
       - name: Build and push PHP 8.2 Phalcon 5 (multi-arch)
         uses: docker/build-push-action@v5

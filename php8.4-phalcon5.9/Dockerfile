@@ -1,23 +1,41 @@
-FROM php:8.4.8-fpm-alpine3.22
+ARG PHP_VERSION=8.4
+FROM php:${PHP_VERSION}-fpm AS base
 
 # Variables
-ARG PHALCON_VERSION=5.9.3
+ARG PHALCON_VERSION=5.9.4
 ARG TARGETARCH
 ARG TARGETPLATFORM
-
 ENV PHALCON_VERSION=${PHALCON_VERSION}
 
 # Copiar instalador de extensiones PHP
 COPY --from=ghcr.io/mlocati/php-extension-installer /usr/bin/install-php-extensions /usr/local/bin/
 
-# Instalar dependencias del sistema
-RUN apk update && apk upgrade && \
-    apk add --no-cache \
+# Instalar dependencias del sistema (incluyendo herramientas de compilación)
+# Multi-arch compatible package installation
+RUN apt-get update && apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends \
         bash \
         git \
-        curl
+        curl \
+        autoconf \
+        g++ \
+        gcc \
+        libc6-dev \
+        make \
+        pkg-config \
+        re2c \
+        libzip-dev \
+        libpng-dev \
+        libjpeg-dev \
+        libfreetype6-dev \
+        libmagickwand-dev \
+        libmemcached-dev \
+        zlib1g-dev \
+        libicu-dev && \
+    echo "🏗️  Building for: ${TARGETPLATFORM} (${TARGETARCH})" && \
+    uname -m
 
-# Instalar extensiones PHP básicas usando el instalador oficial
+# Instalar extensiones PHP básicas
 RUN install-php-extensions \
         pdo_mysql \
         bcmath \
@@ -35,55 +53,44 @@ RUN install-php-extensions \
 # Instalar PSR (requerido para Phalcon)
 RUN install-php-extensions psr
 
-# Estrategia simple: Intentar PECL primero, fallback a GitHub releases
+# Configurar flags de compilación para PHP 8.4 compatibility
+ENV CFLAGS="-Wno-incompatible-pointer-types -Wno-int-conversion"
+ENV CXXFLAGS="-Wno-incompatible-pointer-types -Wno-int-conversion"
+
+# Instalar Phalcon vía PECL
 RUN set -ex && \
-    echo "📦 Instalando Phalcon ${PHALCON_VERSION}..." && \
-    \
-    ( \
-        echo "🎯 Intentando instalación vía PECL..." && \
-        pecl channel-update pecl.php.net && \
-        pecl install phalcon-${PHALCON_VERSION} \
-    ) || ( \
-        echo "⚠️ PECL falló, usando binario precompilado..." && \
-        \
-        if [ "${TARGETARCH}" = "arm64" ] || [ "${TARGETARCH}" = "aarch64" ]; then \
-            ARCH_SUFFIX="arm64"; \
-        else \
-            ARCH_SUFFIX="amd64"; \
-        fi && \
-        \
-        cd /tmp && \
-        PHALCON_SO_URL="https://github.com/phalcon/cphalcon/releases/download/v${PHALCON_VERSION}/phalcon-php8.4-linux-${ARCH_SUFFIX}.so" && \
-        echo "🔗 Intentando descargar: ${PHALCON_SO_URL}" && \
-        ( \
-            curl -L -f -o phalcon.so "${PHALCON_SO_URL}" && \
-            mv phalcon.so "$(php-config --extension-dir)/phalcon.so" \
-        ) || ( \
-            echo "⚠️ Binario no disponible, compilando desde fuente simple..." && \
-            \
-            apk add --no-cache --virtual .build-deps \
-                autoconf \
-                g++ \
-                gcc \
-                libc-dev \
-                make \
-                pkgconf \
-                re2c && \
-            \
-            cd /tmp && \
-            git clone --depth=1 --branch=v${PHALCON_VERSION} https://github.com/phalcon/cphalcon.git && \
-            cd cphalcon/build && \
-            ./install && \
-            \
-            apk del .build-deps && \
-            cd / && rm -rf /tmp/cphalcon \
-        ) \
-    ) && \
-    \
+    echo "📦 Instalando Phalcon ${PHALCON_VERSION} vía PECL..." && \
+    pecl channel-update pecl.php.net && \
+    (pecl install phalcon-${PHALCON_VERSION} || \
+     pecl install phalcon || \
+     (echo "Instalando desde código fuente..." && \
+      git clone --depth=1 --branch=master https://github.com/phalcon/cphalcon.git /tmp/cphalcon && \
+      cd /tmp/cphalcon && \
+      git submodule update --init --recursive && \
+      cd /tmp/cphalcon/build && \
+      ./install --phpize /usr/local/bin/phpize --php-config /usr/local/bin/php-config && \
+      rm -rf /tmp/cphalcon)) && \
+    EXT_DIR=$(php-config --extension-dir) && \
     echo "extension=phalcon.so" > /usr/local/etc/php/conf.d/70-phalcon.ini && \
-    \
+    ls -la "${EXT_DIR}" && \
     php -m | grep phalcon && \
-    echo "✅ Phalcon ${PHALCON_VERSION} instalado correctamente para ${TARGETARCH}"
+    echo "✅ Phalcon ${PHALCON_VERSION} instalado correctamente" || \
+    ( \
+        echo "❌ Error: Falló la instalación de Phalcon" && \
+        exit 1 \
+    )
+
+# Limpiar dependencias de compilación (opcional, para reducir el tamaño de la imagen)
+RUN apt-get purge -y \
+        autoconf \
+        g++ \
+        gcc \
+        libc6-dev \
+        make \
+        pkg-config \
+        re2c && \
+    apt-get autoremove -y && \
+    apt-get autoclean
 
 # Verificación final
 RUN set -ex && \
@@ -92,11 +99,16 @@ RUN set -ex && \
     echo "🎉 Todas las extensiones verificadas correctamente"
 
 # Limpiar caché final
-RUN rm -rf /var/cache/apk/* /tmp/* /var/tmp/*
+RUN rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/cache/apt/archives/*
 
 # Configurar PHP-FPM
 RUN mkdir -p /var/log/php-fpm && \
     chown www-data:www-data /var/log/php-fpm
+
+# Instalar php-fpm-healthcheck
+RUN curl -o /usr/local/bin/php-fpm-healthcheck \
+    https://raw.githubusercontent.com/renatomefi/php-fpm-healthcheck/master/php-fpm-healthcheck \
+    && chmod +x /usr/local/bin/php-fpm-healthcheck
 
 # Healthcheck
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \

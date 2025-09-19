@@ -1,6 +1,6 @@
 services:
   app:
-    image: fvildoso/php-phalcon:8.2.19-alpine
+    image: fvildoso/php-phalcon:8.4-phalcon5.9.4
     volumes:
       - ./:/var/www/html
     ports:
