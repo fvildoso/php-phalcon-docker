@@ -1,155 +1,115 @@
-FROM php:8.4.8-fpm-alpine3.22
+ARG PHP_VERSION=8.4.8
 
-# Variables de entorno
-ENV PHP_VERSION=8.4.8
-ENV PHALCON_VERSION=5.9.3
+FROM php:${PHP_VERSION}-fpm-alpine3.22 AS base
+
+ARG PHP_VERSION=8.4.8
+ARG PHALCON_VERSION=v5.9.3
 ARG TARGETARCH
 ARG TARGETPLATFORM
 
-# Mostrar información de la plataforma de build
-RUN echo "🏗️  Building for: ${TARGETPLATFORM:-unknown}" && \
-    echo "📦 Architecture: ${TARGETARCH:-unknown}" && \
-    uname -m
+# Copiar el instalador de extensiones PHP (la herramienta más confiable)
+COPY --from=ghcr.io/mlocati/php-extension-installer /usr/bin/install-php-extensions /usr/local/bin/
 
-# Verificar versión PHP
-RUN php -v && \
-    if [ $(php -r "echo PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;") != "8.4" ]; then \
-        echo "❌ Error: PHP version is not 8.4" && exit 1; \
-    else \
-        echo "✅ PHP 8.4 verificado correctamente"; \
-    fi
-
-# Definir dependencias de desarrollo
-ENV PHPIZE_DEPS="autoconf dpkg-dev dpkg file g++ gcc libc-dev make pkgconf re2c"
-
-# Instalar dependencias del sistema con optimizaciones por arquitectura
+# Instalar dependencias del sistema
 RUN apk update && apk upgrade && \
     apk add --no-cache \
-        $PHPIZE_DEPS \
+        bash \
         git \
-        libxml2-dev \
-        libzip-dev \
-        curl-dev \
-        libwebp-dev \
-        freetype-dev \
-        libjpeg-turbo-dev \
-        libpng-dev \
-        oniguruma-dev \
-        gettext-dev \
-        openssl-dev \
-        zlib-dev \
-        imagemagick \
-        imagemagick-dev \
-        libmemcached-dev \
-        cyrus-sasl-dev \
-    && echo "✅ Dependencias del sistema instaladas"
+        curl
 
-# Instalar extensiones PHP básicas con optimizaciones por arquitectura
-RUN set -ex && \
-    if [ "${TARGETARCH}" = "arm64" ] || [ "${TARGETARCH}" = "aarch64" ]; then \
-        PARALLEL_JOBS=$(($(nproc) > 2 ? 2 : $(nproc))); \
-    else \
-        PARALLEL_JOBS=$(nproc); \
-    fi && \
-    echo "🚀 Using ${PARALLEL_JOBS} parallel processes for ${TARGETARCH}" && \
-    docker-php-ext-install -j${PARALLEL_JOBS} \
-        pdo \
+# Instalar extensiones PHP usando el instalador oficial
+RUN install-php-extensions \
         pdo_mysql \
         bcmath \
         curl \
         soap \
         fileinfo \
         gettext \
+        gd \
+        imagick \
         mbstring \
-        zip && \
-    docker-php-ext-configure gd \
-        --enable-gd \
-        --with-webp \
-        --with-jpeg \
-        --with-freetype && \
-    docker-php-ext-install -j${PARALLEL_JOBS} gd && \
-    echo "✅ Extensiones PHP básicas y GD instaladas"
+        memcached \
+        opcache \
+        psr \
+        zip
 
-# Instalar extensiones PECL con manejo de errores mejorado
-RUN set -ex && \
-    echo "📦 Instalando extensión PSR..." && \
-    pecl install psr && \
-    docker-php-ext-enable psr && \
-    php -m | grep psr && \
-    echo "✅ PSR instalado correctamente"
-
-RUN set -ex && \
-    echo "📦 Instalando ImageMagick..." && \
-    pecl install imagick && \
-    docker-php-ext-enable imagick && \
-    php -m | grep imagick && \
-    echo "✅ ImageMagick instalado correctamente"
-
-RUN set -ex && \
-    echo "📦 Instalando Memcached..." && \
-    pecl install memcached && \
-    docker-php-ext-enable memcached && \
-    php -m | grep memcached && \
-    echo "✅ Memcached instalado correctamente"
-
-# Instalar Phalcon con manejo específico por arquitectura
-RUN set -ex && \
-    echo "📦 Instalando Phalcon ${PHALCON_VERSION} para ${TARGETARCH}..." && \
-    case ${TARGETARCH} in \
-        amd64) \
-            echo "🏗️  Instalación optimizada para AMD64" && \
-            pecl install phalcon-${PHALCON_VERSION} \
-            ;; \
-        arm64|aarch64) \
-            echo "🏗️  Instalación para ARM64 (puede tardar más)" && \
-            pecl install phalcon-${PHALCON_VERSION} \
-            ;; \
-        *) \
-            echo "🏗️  Instalación genérica para ${TARGETARCH}" && \
-            pecl install phalcon-${PHALCON_VERSION} \
-            ;; \
-    esac && \
-    docker-php-ext-enable phalcon && \
-    php -m | grep phalcon && \
-    echo "✅ Phalcon ${PHALCON_VERSION} instalado correctamente para ${TARGETARCH}"
-
-# Verificación final de todas las extensiones
-RUN set -ex && \
-    echo "🔍 Verificando todas las extensiones..." && \
-    php -m | grep -i pdo && echo "✅ PDO" && \
-    php -m | grep -i curl && echo "✅ cURL" && \
-    php -m | grep -i gd && echo "✅ GD" && \
-    php -m | grep -i imagick && echo "✅ ImageMagick" && \
-    php -m | grep -i memcached && echo "✅ Memcached" && \
-    php -m | grep -i phalcon && echo "✅ Phalcon" && \
-    php -m | grep -i psr && echo "✅ PSR" && \
-    echo "🎉 Todas las extensiones instaladas correctamente en ${TARGETPLATFORM}"
-
-# Limpiar dependencias de build y caché
-RUN set -ex && \
-    echo "🧹 Limpiando caché y dependencias..." && \
-    apk del $PHPIZE_DEPS && \
-    rm -rf /var/cache/apk/* /tmp/* /var/tmp/* /usr/share/man ~/.pearrc && \
-    echo "✅ Limpieza completada"
-
-# Configurar PHP-FPM
+# Configurar PHP-FPM básico
 RUN mkdir -p /var/log/php-fpm && \
-    chown www-data:www-data /var/log/php-fpm && \
-    echo "✅ PHP-FPM configurado"
+    chown www-data:www-data /var/log/php-fpm
 
-# Información final del build
+FROM base AS dev
+
+# Copiar Composer
+COPY --from=composer/composer:2 /usr/bin/composer /usr/bin/composer
+
+# Instalar dependencias de desarrollo
+RUN apk add --no-cache \
+        autoconf \
+        g++ \
+        gcc \
+        libc-dev \
+        make \
+        pkgconf \
+        re2c
+
+# Instalar zephir_parser y configurar memoria para compilación
+RUN install-php-extensions zephir_parser && \
+    echo 'memory_limit = -1' > /usr/local/etc/php/conf.d/90-memory.ini
+
+WORKDIR /srv
+
+FROM dev AS phalcon-builder
+
+# Descargar código fuente de Phalcon
+RUN git clone --depth=1 --branch=${PHALCON_VERSION} https://github.com/phalcon/cphalcon.git /srv
+
+# Instalar Zephir y compilar Phalcon
 RUN set -ex && \
-    echo "📋 Información del contenedor:" && \
-    echo "🐘 PHP: $(php -v | head -n 1)" && \
-    echo "🏗️  Plataforma: ${TARGETPLATFORM:-unknown}" && \
-    echo "📦 Arquitectura: ${TARGETARCH:-unknown}" && \
-    echo "🛠️  Sistema: $(uname -m)" && \
-    echo "🎯 Phalcon: $(php -m | grep -i phalcon || echo 'No detectado')"
+    rm -rf /srv/vendor && \
+    find /srv -type f -iname '*.dep' -exec rm {} \; && \
+    \
+    composer global require phalcon/zephir:dev-development && \
+    \
+    if [ "${TARGETARCH}" = "arm64" ] || [ "${TARGETARCH}" = "aarch64" ]; then \
+        echo "🏗️ Compilando para ARM64 (memoria limitada)"; \
+        /root/.composer/vendor/bin/zephir fullclean; \
+        /root/.composer/vendor/bin/zephir build --no-dev; \
+    else \
+        echo "🏗️ Compilando para AMD64 (optimizado)"; \
+        /root/.composer/vendor/bin/zephir fullclean; \
+        /root/.composer/vendor/bin/zephir build; \
+    fi && \
+    \
+    ls -la /srv/ext/modules/phalcon.so && \
+    echo "✅ Phalcon compilado exitosamente para ${TARGETARCH}"
 
-EXPOSE 9000
+FROM base AS production
 
-# Healthcheck
+# Metadatos de la imagen
+LABEL org.opencontainers.image.title="Phalcon ${PHALCON_VERSION} with PHP ${PHP_VERSION}" \
+      org.opencontainers.image.description="Docker image with Phalcon and PHP on Alpine Linux" \
+      org.opencontainers.image.version="${PHALCON_VERSION}-php${PHP_VERSION}"
+
+# Copiar la extensión compilada
+COPY --from=phalcon-builder /srv/ext/modules/phalcon.so /tmp/phalcon.so
+
+# Instalar Phalcon y limpiar
+RUN set -ex && \
+    mv /tmp/phalcon.so "$(php-config --extension-dir)/phalcon.so" && \
+    echo "extension=phalcon.so" > /usr/local/etc/php/conf.d/70-phalcon.ini && \
+    \
+    php -m | grep phalcon && \
+    echo "✅ Phalcon ${PHALCON_VERSION} instalado correctamente" && \
+    \
+    php -m | grep -E "(pdo|gd|imagick|memcached|phalcon|psr)" && \
+    echo "🎉 Todas las extensiones verificadas" && \
+    \
+    rm -rf /tmp/* /var/tmp/* /var/cache/apk/*
+
+# Healthcheck simple
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD php-fpm-healthcheck || exit 1
+
+EXPOSE 9000
 
 CMD ["php-fpm"]
