@@ -1,13 +1,13 @@
-ARG PHP_VERSION=8.4.8
+FROM php:8.4.8-fpm-alpine3.22
 
-FROM php:${PHP_VERSION}-fpm-alpine3.22 AS base
-
-ARG PHP_VERSION=8.4.8
-ARG PHALCON_VERSION=v5.9.3
+# Variables
+ARG PHALCON_VERSION=5.9.3
 ARG TARGETARCH
 ARG TARGETPLATFORM
 
-# Copiar el instalador de extensiones PHP (la herramienta más confiable)
+ENV PHALCON_VERSION=${PHALCON_VERSION}
+
+# Copiar instalador de extensiones PHP
 COPY --from=ghcr.io/mlocati/php-extension-installer /usr/bin/install-php-extensions /usr/local/bin/
 
 # Instalar dependencias del sistema
@@ -17,7 +17,7 @@ RUN apk update && apk upgrade && \
         git \
         curl
 
-# Instalar extensiones PHP usando el instalador oficial
+# Instalar extensiones PHP básicas usando el instalador oficial
 RUN install-php-extensions \
         pdo_mysql \
         bcmath \
@@ -30,83 +30,75 @@ RUN install-php-extensions \
         mbstring \
         memcached \
         opcache \
-        psr \
         zip
 
-# Configurar PHP-FPM básico
-RUN mkdir -p /var/log/php-fpm && \
-    chown www-data:www-data /var/log/php-fpm
+# Instalar PSR (requerido para Phalcon)
+RUN install-php-extensions psr
 
-FROM base AS dev
-
-# Copiar Composer
-COPY --from=composer/composer:2 /usr/bin/composer /usr/bin/composer
-
-# Instalar dependencias de desarrollo
-RUN apk add --no-cache \
-        autoconf \
-        g++ \
-        gcc \
-        libc-dev \
-        make \
-        pkgconf \
-        re2c
-
-# Instalar zephir_parser y configurar memoria para compilación
-RUN install-php-extensions zephir_parser && \
-    echo 'memory_limit = -1' > /usr/local/etc/php/conf.d/90-memory.ini
-
-WORKDIR /srv
-
-FROM dev AS phalcon-builder
-
-# Descargar código fuente de Phalcon
-RUN git clone --depth=1 --branch=${PHALCON_VERSION} https://github.com/phalcon/cphalcon.git /srv
-
-# Instalar Zephir y compilar Phalcon
+# Estrategia simple: Intentar PECL primero, fallback a GitHub releases
 RUN set -ex && \
-    rm -rf /srv/vendor && \
-    find /srv -type f -iname '*.dep' -exec rm {} \; && \
+    echo "📦 Instalando Phalcon ${PHALCON_VERSION}..." && \
     \
-    composer global require phalcon/zephir:dev-development && \
+    ( \
+        echo "🎯 Intentando instalación vía PECL..." && \
+        pecl channel-update pecl.php.net && \
+        pecl install phalcon-${PHALCON_VERSION} \
+    ) || ( \
+        echo "⚠️ PECL falló, usando binario precompilado..." && \
+        \
+        if [ "${TARGETARCH}" = "arm64" ] || [ "${TARGETARCH}" = "aarch64" ]; then \
+            ARCH_SUFFIX="arm64"; \
+        else \
+            ARCH_SUFFIX="amd64"; \
+        fi && \
+        \
+        cd /tmp && \
+        PHALCON_SO_URL="https://github.com/phalcon/cphalcon/releases/download/v${PHALCON_VERSION}/phalcon-php8.4-linux-${ARCH_SUFFIX}.so" && \
+        echo "🔗 Intentando descargar: ${PHALCON_SO_URL}" && \
+        ( \
+            curl -L -f -o phalcon.so "${PHALCON_SO_URL}" && \
+            mv phalcon.so "$(php-config --extension-dir)/phalcon.so" \
+        ) || ( \
+            echo "⚠️ Binario no disponible, compilando desde fuente simple..." && \
+            \
+            apk add --no-cache --virtual .build-deps \
+                autoconf \
+                g++ \
+                gcc \
+                libc-dev \
+                make \
+                pkgconf \
+                re2c && \
+            \
+            cd /tmp && \
+            git clone --depth=1 --branch=v${PHALCON_VERSION} https://github.com/phalcon/cphalcon.git && \
+            cd cphalcon/build && \
+            ./install && \
+            \
+            apk del .build-deps && \
+            cd / && rm -rf /tmp/cphalcon \
+        ) \
+    ) && \
     \
-    if [ "${TARGETARCH}" = "arm64" ] || [ "${TARGETARCH}" = "aarch64" ]; then \
-        echo "🏗️ Compilando para ARM64 (memoria limitada)"; \
-        /root/.composer/vendor/bin/zephir fullclean; \
-        /root/.composer/vendor/bin/zephir build --no-dev; \
-    else \
-        echo "🏗️ Compilando para AMD64 (optimizado)"; \
-        /root/.composer/vendor/bin/zephir fullclean; \
-        /root/.composer/vendor/bin/zephir build; \
-    fi && \
-    \
-    ls -la /srv/ext/modules/phalcon.so && \
-    echo "✅ Phalcon compilado exitosamente para ${TARGETARCH}"
-
-FROM base AS production
-
-# Metadatos de la imagen
-LABEL org.opencontainers.image.title="Phalcon ${PHALCON_VERSION} with PHP ${PHP_VERSION}" \
-      org.opencontainers.image.description="Docker image with Phalcon and PHP on Alpine Linux" \
-      org.opencontainers.image.version="${PHALCON_VERSION}-php${PHP_VERSION}"
-
-# Copiar la extensión compilada
-COPY --from=phalcon-builder /srv/ext/modules/phalcon.so /tmp/phalcon.so
-
-# Instalar Phalcon y limpiar
-RUN set -ex && \
-    mv /tmp/phalcon.so "$(php-config --extension-dir)/phalcon.so" && \
     echo "extension=phalcon.so" > /usr/local/etc/php/conf.d/70-phalcon.ini && \
     \
     php -m | grep phalcon && \
-    echo "✅ Phalcon ${PHALCON_VERSION} instalado correctamente" && \
-    \
-    php -m | grep -E "(pdo|gd|imagick|memcached|phalcon|psr)" && \
-    echo "🎉 Todas las extensiones verificadas" && \
-    \
-    rm -rf /tmp/* /var/tmp/* /var/cache/apk/*
+    echo "✅ Phalcon ${PHALCON_VERSION} instalado correctamente para ${TARGETARCH}"
 
-# Healthcheck simple
+# Verificación final
+RUN set -ex && \
+    echo "🔍 Verificando extensiones instaladas:" && \
+    php -m | grep -E "(pdo|curl|gd|imagick|memcached|phalcon|psr)" && \
+    echo "🎉 Todas las extensiones verificadas correctamente"
+
+# Limpiar caché final
+RUN rm -rf /var/cache/apk/* /tmp/* /var/tmp/*
+
+# Configurar PHP-FPM
+RUN mkdir -p /var/log/php-fpm && \
+    chown www-data:www-data /var/log/php-fpm
+
+# Healthcheck
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD php-fpm-healthcheck || exit 1
 
